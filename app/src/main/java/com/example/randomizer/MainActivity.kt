@@ -1,4 +1,5 @@
 package com.example.randomizer
+import okhttp3.*
 
 import android.util.Log
 import android.Manifest
@@ -37,7 +38,10 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.example.randomizer.ui.theme.RandomizerTheme
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.IOException
 
 class MainActivity : ComponentActivity() {
     // SpeechRecognizer instance to handle speech input
@@ -216,6 +220,9 @@ fun NextScreen() {
             imageUri.value?.let { uri ->
                 val bitmap = MediaStore.Images.Media.getBitmap(context.contentResolver, uri)
                 capturedImage.value = bitmap
+                sendBitmapToServer(bitmap)
+                println("Bullshit")
+                //needs to have some way to make a TTS response using the response from sendbitmaptoserver
             }
         }
     }
@@ -312,4 +319,42 @@ fun MainScreenPreview() {
     RandomizerTheme {
         MainScreen(navController = rememberNavController())
     }
+}
+
+fun sendBitmapToServer(bitmap: Bitmap): Boolean {
+    val url = "https://your-server-url.com/process_image"
+
+    // Convert Bitmap to ByteArray
+    val byteArray = bitmapToByteArray(bitmap)
+
+    // Create multipart body to send the image
+    val requestBody = MultipartBody.Builder()
+        .setType(MultipartBody.FORM)
+        .addFormDataPart("image", "image.jpg", RequestBody.create("image/jpeg".toMediaTypeOrNull(), byteArray))
+        .build()
+
+    // Prepare the HTTP request
+    val request = Request.Builder()
+        .url(url)
+        .post(requestBody)
+        .build()
+
+    // Execute the HTTP request synchronously
+    val client = OkHttpClient()
+
+    // This blocks the UI thread until the response is received
+    try {
+        val response = client.newCall(request).execute() // Blocking call
+        return response.isSuccessful
+    } catch (e: Exception) {
+        e.printStackTrace()
+        return false
+    }
+}
+
+// Convert Bitmap to byte array
+fun bitmapToByteArray(bitmap: Bitmap): ByteArray {
+    val byteArrayOutputStream = ByteArrayOutputStream()
+    bitmap.compress(Bitmap.CompressFormat.JPEG, 100, byteArrayOutputStream)
+    return byteArrayOutputStream.toByteArray()
 }
