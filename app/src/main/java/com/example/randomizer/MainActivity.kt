@@ -38,13 +38,21 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.example.randomizer.ui.theme.RandomizerTheme
 import java.io.File
+import android.speech.tts.TextToSpeech
+import android.speech.tts.TextToSpeech.OnInitListener
+import android.os.Build
+import java.util.*
 
-class MainActivity : ComponentActivity() {
-    // SpeechRecognizer instance to handle speech input
+class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     lateinit var speechRecognizer: SpeechRecognizer
+    lateinit var textToSpeech: TextToSpeech
+    var isTtsInitialized by mutableStateOf(false)  // Track TTS initialization
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Initialize Text-to-Speech
+        textToSpeech = TextToSpeech(this, this)
 
         // Request necessary permissions
         checkMicrophonePermission()
@@ -59,6 +67,41 @@ class MainActivity : ComponentActivity() {
 
         // Initialize the speech recognizer
         speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
+    }
+
+    // Text-to-Speech initialization
+    override fun onInit(status: Int) {
+        if (status == TextToSpeech.SUCCESS) {
+            // Set language for TTS
+            val langResult = textToSpeech.setLanguage(Locale.US)
+            if (langResult == TextToSpeech.LANG_MISSING_DATA || langResult == TextToSpeech.LANG_NOT_SUPPORTED) {
+                Toast.makeText(this, "Language not supported or missing data", Toast.LENGTH_SHORT).show()
+            }
+            // TTS is initialized successfully
+            isTtsInitialized = true
+        } else {
+            Toast.makeText(this, "Text-to-Speech initialization failed", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // Speak a given text
+    fun speak(text: String) {
+        if (isTtsInitialized) {
+            if (textToSpeech.isSpeaking) {
+                textToSpeech.stop()
+            }
+            textToSpeech.speak(text, TextToSpeech.QUEUE_FLUSH, null, null)
+        } else {
+            // If TTS is not initialized, wait or handle error
+            Toast.makeText(this, "Text-to-Speech not initialized", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // Don't forget to shut down TTS when the activity is destroyed
+    override fun onDestroy() {
+        super.onDestroy()
+        textToSpeech.stop()
+        textToSpeech.shutdown()
     }
 
     // Function to check and request microphone permission
@@ -162,6 +205,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+
 // Composable function to set up the navigation graph
 @Composable
 fun AppNavGraph() {
@@ -176,8 +220,20 @@ fun AppNavGraph() {
 // Main screen of the app
 @Composable
 fun MainScreen(navController: NavController) {
+    val context = LocalContext.current
+    val activity = context as MainActivity
+
+    // Use TTS to speak the text when the screen loads
+    LaunchedEffect(Unit) {
+        if (activity.isTtsInitialized) {
+            activity.speak("Press anywhere to proceed")
+        } else {
+            // Handle fallback if TTS is not initialized yet
+            Toast.makeText(context, "TTS is initializing", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     Scaffold {
-        // Box that fills the entire screen and is clickable
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -186,33 +242,24 @@ fun MainScreen(navController: NavController) {
                 },
             contentAlignment = Alignment.Center
         ) {
-            // Display text in the center of the screen
-            Text(text = "Tap anywhere to proceed")
+            Text(text = "Press anywhere to proceed")
         }
     }
 }
 
-// Next screen where the main logic happens
 @Composable
 fun NextScreen() {
-    // Obtain the current context and cast it to MainActivity
     val context = LocalContext.current
     val activity = context as MainActivity
 
-    // State variables to track if "scan" was heard and the captured image
     val scanSuccess = remember { mutableStateOf(false) }
     val capturedImage = remember { mutableStateOf<Bitmap?>(null) }
-
-    // Temporary URI to store the image
     val imageUri = remember { mutableStateOf<Uri?>(null) }
 
-    // Launcher to take a picture and get the result
     val takePictureLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.TakePicture()
     ) { success ->
         if (success) {
-
-            // Load the image from the URI and update the state
             imageUri.value?.let { uri ->
                 val bitmap = MediaStore.Images.Media.getBitmap(context.contentResolver, uri)
                 capturedImage.value = bitmap
@@ -220,15 +267,19 @@ fun NextScreen() {
         }
     }
 
-    // Set up the speech recognition listener
+    // LaunchedEffect to start listening and trigger TTS message for "scan"
     LaunchedEffect(Unit) {
-        // Ensure the microphone permission is granted before starting to listen
+        if (activity.isTtsInitialized) {
+            activity.speak("Say 'scan' to take a photo.")
+        } else {
+            Toast.makeText(context, "TTS is initializing", Toast.LENGTH_SHORT).show()
+        }
+
         if (ContextCompat.checkSelfPermission(
-                activity,
+                context,
                 Manifest.permission.RECORD_AUDIO
-            ) == PackageManager.PERMISSION_GRANTED
-        ) {
-            // Initialize the RecognitionListener
+            ) == PackageManager.PERMISSION_GRANTED) {
+
             activity.speechRecognizer.setRecognitionListener(object : RecognitionListener {
                 override fun onReadyForSpeech(params: Bundle?) {}
                 override fun onBeginningOfSpeech() {}
@@ -237,79 +288,57 @@ fun NextScreen() {
                 override fun onEndOfSpeech() {}
                 override fun onError(error: Int) {}
                 override fun onResults(results: Bundle?) {
-                    // Obtain the recognized words
-                    val matches =
-                        results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                    // Check if "scan" is among the recognized words
+                    val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                     if (matches != null && matches.contains("scan")) {
-                        // Update state variables
                         scanSuccess.value = true
-                        // Prepare to take a photo
                         val photoFile = createImageFile(context)
                         imageUri.value = FileProvider.getUriForFile(
                             context,
-                            "${context.packageName}.provider",
+                            "com.example.randomizer.fileprovider",
                             photoFile
                         )
-                        // Before launching the camera, check camera permission
-                        if (ContextCompat.checkSelfPermission(
-                                context,
-                                Manifest.permission.CAMERA
-                            ) == PackageManager.PERMISSION_GRANTED
-                        ) {
-                            // Launch the camera to take a picture
-                            takePictureLauncher.launch(imageUri.value)
-                        } else {
-                            // Request camera permission
-                            activity.checkCameraPermission()
-                        }
+                        takePictureLauncher.launch(imageUri.value)
                     }
                 }
-
                 override fun onPartialResults(partialResults: Bundle?) {}
                 override fun onEvent(eventType: Int, params: Bundle?) {}
             })
-            // Start listening for speech input
+
             activity.startListening()
         } else {
-            // Request microphone permission
             activity.checkMicrophonePermission()
         }
     }
 
-    // UI for the NextScreen
-    Box(
-        modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center
-    ) {
-        if (capturedImage.value != null) {
-            // Display the captured image
-            Image(
-                bitmap = capturedImage.value!!.asImageBitmap(),
-                contentDescription = "Captured Image"
-            )
-        } else {
+    if (scanSuccess.value) {
+        capturedImage.value?.let {
+            Image(bitmap = it.asImageBitmap(), contentDescription = "Captured Image")
+        }
+    }
+
+    Scaffold {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .clickable { },
+            contentAlignment = Alignment.Center
+        ) {
             Text(text = "Say 'scan' to take a photo.")
         }
     }
 }
+  
 
-// Function to create a temporary image file
+// Helper function to create a file for storing the captured image
 fun createImageFile(context: Context): File {
-    val timestamp = System.currentTimeMillis()
-    val storageDir = context.cacheDir
-    return File.createTempFile(
-        "JPEG_${timestamp}_",
-        ".jpg",
-        storageDir
-    )
+    val storageDir = context.getExternalFilesDir(null)
+    return File.createTempFile("photo_", ".jpg", storageDir)
 }
 
-// Preview function for the MainScreen
 @Preview(showBackground = true)
 @Composable
-fun MainScreenPreview() {
+fun DefaultPreview() {
     RandomizerTheme {
-        MainScreen(navController = rememberNavController())
+        AppNavGraph()
     }
 }

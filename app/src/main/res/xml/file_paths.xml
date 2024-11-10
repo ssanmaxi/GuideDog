@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<paths>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Cache directory for temporary images -->
     <cache-path name="images" path="." />
+    <!-- Files directory, for better persistence -->
+    <files-path name="images" path="images/" />
 </paths>
