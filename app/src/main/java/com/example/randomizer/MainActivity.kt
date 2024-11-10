@@ -1,6 +1,5 @@
 package com.example.randomizer
 
-import android.util.Log
 import android.Manifest
 import android.content.Context
 import android.content.Intent
@@ -12,6 +11,7 @@ import android.provider.MediaStore
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -42,6 +42,9 @@ import java.io.File
 class MainActivity : ComponentActivity() {
     // SpeechRecognizer instance to handle speech input
     lateinit var speechRecognizer: SpeechRecognizer
+
+    // Flag to track if the SpeechRecognizer is listening
+    var isListening = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -135,23 +138,42 @@ class MainActivity : ComponentActivity() {
 
     // Function to start speech recognition
     fun startListening() {
-        // Check if permission is granted and only allow intent if so
-        if (ContextCompat.checkSelfPermission(
-                this,
-                Manifest.permission.RECORD_AUDIO
-            ) == PackageManager.PERMISSION_GRANTED
-        ) {
-            // Intent to trigger speech recognition
-            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
-            intent.putExtra(
-                RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
-            )
-            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US")
-            speechRecognizer.startListening(intent)
-        } else {
-            // Request permission
-            checkMicrophonePermission()
+        if (!isListening) {
+            if (ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.RECORD_AUDIO
+                ) == PackageManager.PERMISSION_GRANTED
+            ) {
+                val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+                intent.putExtra(
+                    RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                    RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+                )
+                intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US")
+
+                // Adjust silence detection parameters
+                intent.putExtra(
+                    RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS,
+                    5000L
+                )
+                intent.putExtra(
+                    RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS,
+                    5000L
+                )
+                intent.putExtra(
+                    RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS,
+                    5000L
+                )
+
+                // Allow partial results (optional)
+                intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+
+                speechRecognizer.startListening(intent)
+                isListening = true
+            } else {
+                // Request permission
+                checkMicrophonePermission()
+            }
         }
     }
 
@@ -159,7 +181,145 @@ class MainActivity : ComponentActivity() {
     override fun onStop() {
         super.onStop()
         speechRecognizer.stopListening()
+        isListening = false
     }
+
+    // Release resources in onDestroy
+    override fun onDestroy() {
+        super.onDestroy()
+        speechRecognizer.destroy()
+    }
+}
+@Composable
+fun NextScreen() {
+    // Obtain the current context and cast it to MainActivity
+    val context = LocalContext.current
+    val activity = context as MainActivity
+
+    // State variables to track if "scan" was heard and the captured image
+    val scanSuccess = remember { mutableStateOf(false) }
+    val capturedImage = remember { mutableStateOf<Bitmap?>(null) }
+
+    // Temporary URI to store the image
+    val imageUri = remember { mutableStateOf<Uri?>(null) }
+
+    // Launcher to take a picture and get the result
+    val takePictureLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture()
+    ) { success ->
+        if (success) {
+            // Log success message
+            Log.d("NextScreen", "Picture was successfully taken.")
+
+            // Load the image from the URI and update the state
+            imageUri.value?.let { uri ->
+                val bitmap = MediaStore.Images.Media.getBitmap(context.contentResolver, uri)
+                capturedImage.value = bitmap
+            }
+        } else {
+            // Log failure message
+            Log.d("NextScreen", "Picture was not taken.")
+        }
+    }
+
+    // Set up the speech recognition listener
+    LaunchedEffect(Unit) {
+        if (ContextCompat.checkSelfPermission(
+                activity,
+                Manifest.permission.RECORD_AUDIO
+            ) == PackageManager.PERMISSION_GRANTED
+        ) {
+            activity.speechRecognizer.setRecognitionListener(object : RecognitionListener {
+                override fun onReadyForSpeech(params: Bundle?) {}
+                override fun onBeginningOfSpeech() {}
+                override fun onRmsChanged(rmsdB: Float) {}
+                override fun onBufferReceived(buffer: ByteArray?) {}
+                override fun onEndOfSpeech() {}
+
+                override fun onError(error: Int) {
+                    activity.isListening = false
+                    when (error) {
+                        SpeechRecognizer.ERROR_NO_MATCH,
+                        SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> {
+                            // Restart listening
+                            activity.startListening()
+                        }
+                        else -> {
+                            // Handle other errors if necessary
+                            activity.startListening()
+                        }
+                    }
+                }
+
+                override fun onResults(results: Bundle?) {
+                    activity.isListening = false
+                    // Obtain the recognized words
+                    val matches =
+                        results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    // Check if "scan" is among the recognized words
+                    if (matches != null && matches.contains("scan")) {
+                        // Update state variables
+                        scanSuccess.value = true
+                        // Prepare to take a photo
+                        val photoFile = createImageFile(context)
+                        imageUri.value = FileProvider.getUriForFile(
+                            context,
+                            "${context.packageName}.provider",
+                            photoFile
+                        )
+                        // Before launching the camera, check camera permission
+                        if (ContextCompat.checkSelfPermission(
+                                context,
+                                Manifest.permission.CAMERA
+                            ) == PackageManager.PERMISSION_GRANTED
+                        ) {
+                            // Launch the camera to take a picture
+                            takePictureLauncher.launch(imageUri.value)
+                        } else {
+                            // Request camera permission
+                            activity.checkCameraPermission()
+                        }
+                    }
+                    // Restart listening after processing results
+                    activity.startListening()
+                }
+
+                override fun onPartialResults(partialResults: Bundle?) {}
+                override fun onEvent(eventType: Int, params: Bundle?) {}
+            })
+            // Start listening for speech input
+            activity.startListening()
+        } else {
+            // Request microphone permission
+            activity.checkMicrophonePermission()
+        }
+    }
+
+    // UI for the NextScreen
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center
+    ) {
+        if (capturedImage.value != null) {
+            // Display the captured image
+            Image(
+                bitmap = capturedImage.value!!.asImageBitmap(),
+                contentDescription = "Captured Image"
+            )
+        } else {
+            Text(text = "Say 'scan' to take a photo.")
+        }
+    }
+}
+// Function to create a temporary image file
+fun createImageFile(context: Context): File {
+    val timestamp = System.currentTimeMillis()
+    val storageDir = context.cacheDir
+    return File.createTempFile(
+        "JPEG_${timestamp}_",
+        ".jpg",
+        storageDir
+    )
 }
 
 // Composable function to set up the navigation graph
@@ -190,119 +350,6 @@ fun MainScreen(navController: NavController) {
             Text(text = "Tap anywhere to proceed")
         }
     }
-}
-
-// Next screen where the main logic happens
-@Composable
-fun NextScreen() {
-    // Obtain the current context and cast it to MainActivity
-    val context = LocalContext.current
-    val activity = context as MainActivity
-
-    // State variables to track if "scan" was heard and the captured image
-    val scanSuccess = remember { mutableStateOf(false) }
-    val capturedImage = remember { mutableStateOf<Bitmap?>(null) }
-
-    // Temporary URI to store the image
-    val imageUri = remember { mutableStateOf<Uri?>(null) }
-
-    // Launcher to take a picture and get the result
-    val takePictureLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.TakePicture()
-    ) { success ->
-        if (success) {
-
-            // Load the image from the URI and update the state
-            imageUri.value?.let { uri ->
-                val bitmap = MediaStore.Images.Media.getBitmap(context.contentResolver, uri)
-                capturedImage.value = bitmap
-            }
-        }
-    }
-
-    // Set up the speech recognition listener
-    LaunchedEffect(Unit) {
-        // Ensure the microphone permission is granted before starting to listen
-        if (ContextCompat.checkSelfPermission(
-                activity,
-                Manifest.permission.RECORD_AUDIO
-            ) == PackageManager.PERMISSION_GRANTED
-        ) {
-            // Initialize the RecognitionListener
-            activity.speechRecognizer.setRecognitionListener(object : RecognitionListener {
-                override fun onReadyForSpeech(params: Bundle?) {}
-                override fun onBeginningOfSpeech() {}
-                override fun onRmsChanged(rmsdB: Float) {}
-                override fun onBufferReceived(buffer: ByteArray?) {}
-                override fun onEndOfSpeech() {}
-                override fun onError(error: Int) {}
-                override fun onResults(results: Bundle?) {
-                    // Obtain the recognized words
-                    val matches =
-                        results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                    // Check if "scan" is among the recognized words
-                    if (matches != null && matches.contains("scan")) {
-                        // Update state variables
-                        scanSuccess.value = true
-                        // Prepare to take a photo
-                        val photoFile = createImageFile(context)
-                        imageUri.value = FileProvider.getUriForFile(
-                            context,
-                            "${context.packageName}.provider",
-                            photoFile
-                        )
-                        // Before launching the camera, check camera permission
-                        if (ContextCompat.checkSelfPermission(
-                                context,
-                                Manifest.permission.CAMERA
-                            ) == PackageManager.PERMISSION_GRANTED
-                        ) {
-                            // Launch the camera to take a picture
-                            takePictureLauncher.launch(imageUri.value)
-                        } else {
-                            // Request camera permission
-                            activity.checkCameraPermission()
-                        }
-                    }
-                }
-
-                override fun onPartialResults(partialResults: Bundle?) {}
-                override fun onEvent(eventType: Int, params: Bundle?) {}
-            })
-            // Start listening for speech input
-            activity.startListening()
-        } else {
-            // Request microphone permission
-            activity.checkMicrophonePermission()
-        }
-    }
-
-    // UI for the NextScreen
-    Box(
-        modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center
-    ) {
-        if (capturedImage.value != null) {
-            // Display the captured image
-            Image(
-                bitmap = capturedImage.value!!.asImageBitmap(),
-                contentDescription = "Captured Image"
-            )
-        } else {
-            Text(text = "Say 'scan' to take a photo.")
-        }
-    }
-}
-
-// Function to create a temporary image file
-fun createImageFile(context: Context): File {
-    val timestamp = System.currentTimeMillis()
-    val storageDir = context.cacheDir
-    return File.createTempFile(
-        "JPEG_${timestamp}_",
-        ".jpg",
-        storageDir
-    )
 }
 
 // Preview function for the MainScreen
